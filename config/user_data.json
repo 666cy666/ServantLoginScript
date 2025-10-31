@@ -1,0 +1,9 @@
+{
+  "account": "",
+  "password": "",
+  "auto_ocr": false,
+  "headless": false,
+  "topmost": true,
+  "mode": "kw",
+  "kw_serial": ""
+}

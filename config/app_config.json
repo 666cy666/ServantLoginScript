@@ -1,0 +1,61 @@
+{
+  "login": {
+    "bm": {
+      "url": "http://bm.scs.gov.cn/pp/gkweb/core/web/ui/business/auth/login.html",
+      "selector_type": "class_name",
+      "username": {
+        "selector": "input240",
+        "selector_type": "class_name"
+      },
+      "password": {
+        "selector": "input240 password",
+        "selector_type": "class_name"
+      },
+      "captcha_image": {
+        "selector": "captchaImg",
+        "selector_type": "id"
+      },
+      "captcha_input": {
+        "selector": "captchaWord",
+        "selector_type": "id"
+      },
+      "submit": {
+        "selector": "register_btn",
+        "selector_type": "class_name"
+      }
+    },
+    "kw": {
+      "url": "",
+      "selector_type": "css",
+      "username": {
+        "selector": "",
+        "selector_type": "css"
+      },
+      "password": {
+        "selector": "",
+        "selector_type": "css"
+      },
+      "serial": {
+        "selector": "",
+        "selector_type": "css"
+      },
+      "captcha_image": {
+        "selector": "",
+        "selector_type": "id"
+      },
+      "captcha_input": {
+        "selector": "",
+        "selector_type": "id"
+      },
+      "submit": {
+        "selector": "",
+        "selector_type": "css"
+      }
+    }
+  },
+  "loop_attempts": 3,
+  "config_sources": [
+    "http://napcat.666cy666.top/config.json",
+    "https://example.com/config2.json"
+  ]
+}
