@@ -1,0 +1,829 @@
+import threading
+import time
+import tkinter as tk
+from tkinter import ttk
+from typing import Any
+import webbrowser
+from util.config_store import (
+    load_user_data, load_app_config, update_user_data,
+    load_settings, parse_selector_config
+)
+from util.paths import IMG_DIR
+
+
+class App:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("公务员网站自动登录助手")
+
+        # 分别加载用户数据和配置
+        self.user_data = load_user_data()
+        self.app_config = load_app_config()
+        self.settings = {**self.user_data, **self.app_config}  # 合并供兼容使用
+        
+        # 窗口置顶（从配置读取）
+        topmost = self.user_data.get("topmost", True)
+        self.root.attributes('-topmost', topmost)
+        
+        # 定死窗口大小
+        window_width = 750  # 增加宽度以适应更多按钮
+        window_height = 650  # 增加高度以适应URL输入区域
+        self.root.resizable(False, False)
+        # 计算窗口居中位置
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        self.driver = None
+        self.current_browser = None  # 记录当前使用的浏览器类型
+        self.ocr = None
+        self.looping = False
+        self.loop_stop = threading.Event()
+        self.current_mode = self.user_data.get("mode", "bm")  # bm | kw
+
+        # UI
+        frm = ttk.Frame(root, padding=10)
+        frm.grid(row=0, column=0, sticky="nsew")
+
+        ttk.Label(frm, text="账号").grid(row=0, column=0, sticky="w")
+        self.var_account = tk.StringVar(value=self.user_data.get("account", ""))
+        ent_account = ttk.Entry(frm, textvariable=self.var_account, width=32)
+        ent_account.grid(row=0, column=1, sticky="we", padx=6, pady=4)
+
+        ttk.Label(frm, text="密码").grid(row=1, column=0, sticky="w")
+        self.var_password = tk.StringVar(value=self.user_data.get("password", ""))
+        ent_password = ttk.Entry(frm, textvariable=self.var_password, show='*', width=32)
+        ent_password.grid(row=1, column=1, sticky="we", padx=6, pady=4)
+
+        # 序列号（考务使用）- 上移到账号密码一起
+        ttk.Label(frm, text="序列号").grid(row=2, column=0, sticky="w")
+        self.var_serial = tk.StringVar(value=self.user_data.get("kw_serial", ""))
+        ent_serial = ttk.Entry(frm, textvariable=self.var_serial, width=32)
+        ent_serial.grid(row=2, column=1, sticky="we", padx=6, pady=4)
+
+        # 浏览器选择
+        ttk.Label(frm, text="浏览器").grid(row=3, column=0, sticky="w")
+        self.var_browser = tk.StringVar(value=self.user_data.get("browser", "chrome"))
+        browser_combo = ttk.Combobox(frm, textvariable=self.var_browser, 
+                                     values=["chrome", "edge", "firefox"], 
+                                     width=29, state="readonly")
+        browser_combo.grid(row=3, column=1, sticky="w", padx=6, pady=4)
+
+        # URL输入区域
+        url_frame = ttk.LabelFrame(frm, text="登录网址", padding=5)
+        url_frame.grid(row=4, column=0, columnspan=2, sticky="we", pady=6)
+        
+        # 报名URL
+        ttk.Label(url_frame, text="国考报名登陆页（bm）:").grid(row=0, column=0, sticky="w", padx=4)
+        bm_url = self.app_config.get("login", {}).get("bm", {}).get("url", "")
+        self.var_bm_url = tk.StringVar(value=bm_url)
+        ent_bm_url = ttk.Entry(url_frame, textvariable=self.var_bm_url, width=50)
+        ent_bm_url.grid(row=0, column=1, sticky="we", padx=4, pady=2)
+        
+        # 考务URL
+        ttk.Label(url_frame, text="公务员报名确认及准考证打印系统（kw）:").grid(row=1, column=0, sticky="w", padx=4)
+        kw_url = self.app_config.get("login", {}).get("kw", {}).get("url", "")
+        self.var_kw_url = tk.StringVar(value=kw_url)
+        ent_kw_url = ttk.Entry(url_frame, textvariable=self.var_kw_url, width=50)
+        ent_kw_url.grid(row=1, column=1, sticky="we", padx=4, pady=2)
+        
+        url_frame.columnconfigure(1, weight=1)
+
+        # 复选框（三个复选框放在一行）
+        checkbox_frame = ttk.Frame(frm)
+        checkbox_frame.grid(row=5, column=0, columnspan=2, sticky="w", pady=4)
+        self.var_auto_ocr = tk.BooleanVar(value=self.user_data.get("auto_ocr", True))
+        self.var_headless = tk.BooleanVar(value=self.user_data.get("headless", False))
+        self.var_topmost = tk.BooleanVar(value=self.user_data.get("topmost", True))
+        self.var_mode = tk.StringVar(value=self.current_mode)
+        chk_ocr = ttk.Checkbutton(checkbox_frame, text="自动识别验证码", variable=self.var_auto_ocr)
+        chk_headless = ttk.Checkbutton(checkbox_frame, text="后台登录(无头)", variable=self.var_headless)
+        chk_topmost = ttk.Checkbutton(checkbox_frame, text="窗口置顶", variable=self.var_topmost, command=self.toggle_topmost)
+        chk_ocr.grid(row=0, column=0, sticky="w", padx=(0, 15))
+        chk_headless.grid(row=0, column=1, sticky="w", padx=(0, 15))
+        chk_topmost.grid(row=0, column=2, sticky="w")
+
+        # 循环次数输入
+        ttk.Label(frm, text="循环次数").grid(row=6, column=0, sticky="w")
+        self.var_loop_attempts = tk.StringVar(value=str(self.user_data.get("loop_attemptsGUI", self.app_config.get("loop_attempts", 100))))
+        ent_loop_attempts = ttk.Entry(frm, textvariable=self.var_loop_attempts, width=32)
+        ent_loop_attempts.grid(row=6, column=1, sticky="w", padx=6, pady=4)
+
+        # 按钮栏（分成两行，每行4个按钮，均匀分布）
+        btn_frame = ttk.Frame(frm)
+        btn_frame.grid(row=7, column=0, columnspan=2, sticky="we", pady=6)
+        
+        # 第一行按钮（4个）
+        btn_bar1 = ttk.Frame(btn_frame)
+        btn_bar1.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(btn_bar1, text="打开报名界面", command=lambda: self.open_page("bm")).grid(row=0, column=0, padx=2, sticky="ew")
+        ttk.Button(btn_bar1, text="打开考务界面", command=lambda: self.open_page("kw")).grid(row=0, column=1, padx=2, sticky="ew")
+        ttk.Button(btn_bar1, text="刷新界面", command=self.refresh_page).grid(row=0, column=2, padx=2, sticky="ew")
+        ttk.Button(btn_bar1, text="登录", command=self.login_once).grid(row=0, column=3, padx=2, sticky="ew")
+        btn_bar1.columnconfigure(0, weight=1)
+        btn_bar1.columnconfigure(1, weight=1)
+        btn_bar1.columnconfigure(2, weight=1)
+        btn_bar1.columnconfigure(3, weight=1)
+        
+        # 第二行按钮（4个）
+        btn_bar2 = ttk.Frame(btn_frame)
+        btn_bar2.pack(fill=tk.X)
+        ttk.Button(btn_bar2, text="循环测试登录", command=self.loop_login).grid(row=0, column=0, padx=2, sticky="ew")
+        ttk.Button(btn_bar2, text="停止循环", command=self.stop_loop).grid(row=0, column=1, padx=2, sticky="ew")
+        ttk.Button(btn_bar2, text="测试验证码", command=self.test_captcha).grid(row=0, column=2, padx=2, sticky="ew")
+        ttk.Button(btn_bar2, text="关于", command=self.show_about).grid(row=0, column=3, padx=2, sticky="ew")
+        btn_bar2.columnconfigure(0, weight=1)
+        btn_bar2.columnconfigure(1, weight=1)
+        btn_bar2.columnconfigure(2, weight=1)
+        btn_bar2.columnconfigure(3, weight=1)
+
+        # 日志区域
+        self.txt = tk.Text(frm, height=12, wrap=tk.WORD)
+        self.txt.grid(row=8, column=0, columnspan=2, sticky="nsew")
+
+        frm.columnconfigure(1, weight=1)
+        frm.rowconfigure(8, weight=1)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+
+        self.log("准备就绪。请在配置文件中设置登录URL与选择器。")
+
+    def toggle_topmost(self):
+        """切换窗口置顶状态"""
+        topmost = self.var_topmost.get()
+        self.root.attributes('-topmost', topmost)
+        # 立即保存设置
+        to_save = {
+            "topmost": topmost
+        }
+        update_user_data(to_save)
+    
+    def save_current_settings(self):
+        try:
+            loop_attempts_value = int(self.var_loop_attempts.get())
+        except ValueError:
+            loop_attempts_value = 100
+        to_save = {
+            "account": self.var_account.get().strip(),
+            "password": self.var_password.get(),
+            "auto_ocr": bool(self.var_auto_ocr.get()),
+            "headless": bool(self.var_headless.get()),
+            "topmost": bool(self.var_topmost.get()),
+            "mode": self.current_mode,
+            "kw_serial": self.var_serial.get().strip(),
+            "browser": self.var_browser.get(),
+            "loop_attemptsGUI": loop_attempts_value,
+        }
+        self.user_data = update_user_data(to_save)
+        
+        # 保存URL到配置文件（使用深度合并保持其他配置不变）
+        from util.config_store import update_app_config
+        bm_url = self.var_bm_url.get().strip()
+        kw_url = self.var_kw_url.get().strip()
+        url_config = {
+            "login": {
+                "bm": {"url": bm_url},
+                "kw": {"url": kw_url}
+            }
+        }
+        update_app_config(url_config)
+        
+        # 重新加载配置以更新settings
+        from util.config_store import load_app_config
+        self.app_config = load_app_config()
+        # 更新合并的settings
+        self.settings = {**self.user_data, **self.app_config}
+        
+    def ensure_driver(self):
+        browser = self.var_browser.get()
+        # 如果driver不存在，或者浏览器类型改变了，需要重新创建driver
+        if self.driver is None or self.current_browser != browser:
+            # 关闭旧的driver
+            if self.driver is not None:
+                try:
+                    self.driver.close()
+                except Exception:
+                    pass
+            # 懶加載，減少GUI啟動時間
+            from util.drission_helper import DrissionDriver
+            self.driver = DrissionDriver(headless=bool(self.var_headless.get()), browser=browser)
+            self.current_browser = browser
+        return self.driver
+
+    def ensure_ocr(self):
+        if self.ocr is None:
+            # 懶加載OCR，避免導入大模型拖慢啟動
+            from util.ocr_helper import CaptchaOcr
+            self.ocr = CaptchaOcr()
+        return self.ocr
+
+    def log(self, msg: str):
+        """线程安全的日志输出"""
+        timestamp = time.strftime('%H:%M:%S')
+        log_msg = f"{timestamp} - {msg}\n"
+        # 使用 after 确保在主线程中更新 GUI
+        self.root.after(0, lambda: self._log_impl(log_msg))
+    
+    def _log_impl(self, log_msg: str):
+        """实际的日志输出实现（在主线程中执行）"""
+        self.txt.insert('end', log_msg)
+        self.txt.see('end')
+
+    def open_page(self, mode: str):
+        """打开页面（后台线程执行）"""
+        # 設置當前模式
+        self.current_mode = mode
+        self.var_mode.set(mode)
+        self.save_current_settings()
+        
+        # 优先使用GUI中的URL
+        if mode == "bm":
+            url = self.var_bm_url.get().strip()
+        else:
+            url = self.var_kw_url.get().strip()
+        
+        # 如果GUI中没有URL，则从配置文件读取
+        if not url:
+            login_cfg = self.settings.get("login", {}).get(mode, {})
+            url = login_cfg.get("url", "")
+        
+        if not url:
+            self.log(f"请填写{ '报名' if mode=='bm' else '考务' }登录URL")
+            return
+        
+        def worker():
+            try:
+                self.log(f"正在打开{ '报名' if mode=='bm' else '考务' }登录页...")
+                drv = self.ensure_driver()
+                drv.goto(url)
+                self.log(f"已打开{ '报名' if mode=='bm' else '考务' }登录页: {url}")
+            except Exception as e:
+                self.log(f"打开页面失败: {e}")
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def refresh_page(self):
+        """刷新页面（后台线程执行）"""
+        if not self.driver:
+            self.log("浏览器未启动。")
+            return
+        
+        def worker():
+            try:
+                self.log("正在刷新页面...")
+                self.driver.page.refresh()
+                self.log("页面已刷新。")
+            except Exception as e:
+                self.log(f"刷新失败: {e}")
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fill_login_form(self, mode: str) -> bool:
+        s = self.settings
+        login_all = s.get("login", {})
+        login = login_all.get(mode, {})
+        default_selector_type = login.get("selector_type", "xpath")
+
+        # 等待页面加载完成
+        import time
+        time.sleep(1)
+
+        # 输入账号 - 使用灵活的选择器配置
+        username_config = login.get("username", "")
+        account_value = self.var_account.get().strip()
+        if username_config:
+            username_sel, username_type = parse_selector_config(username_config, default_selector_type)
+            if username_sel:
+                ok_u = self.driver.input(username_sel, account_value, username_type)
+                if not ok_u:
+                    self.log(f"账号输入框定位失败。选择器: {username_sel} ({username_type})")
+                    return False
+                self.log(f"已输入账号: {account_value}")
+            else:
+                self.log("账号选择器未配置")
+                return False
+        else:
+            self.log("账号选择器未配置")
+            return False
+
+        # 输入密码 - 使用灵活的选择器配置
+        ok_p = True
+        password_config = login.get("password", "")
+        if password_config:
+            password_sel, password_type = parse_selector_config(password_config, default_selector_type)
+            if password_sel:
+                ok_p = self.driver.input(password_sel, self.var_password.get(), password_type)
+                if not ok_p:
+                    self.log(f"密码输入框定位失败。选择器: {password_sel} ({password_type})")
+                    return False
+                self.log("已输入密码")
+
+        # 输入序列号（考务模式）- 当开启自动识别验证码时才输入
+        ok_sn = True
+        if mode == 'kw' and self.var_auto_ocr.get():
+            serial_config = login.get("serial", "")
+            if serial_config:
+                serial_sel, serial_type = parse_selector_config(serial_config, default_selector_type)
+                if serial_sel:
+                    ok_sn = self.driver.input(serial_sel, self.var_serial.get().strip(), serial_type)
+                    if not ok_sn:
+                        self.log(f"序列号输入框定位失败。选择器: {serial_sel} ({serial_type})")
+                        return False
+                    self.log("已输入序列号")
+
+        # 处理验证码 - 使用灵活的选择器配置
+        if self.var_auto_ocr.get():
+            captcha_img_config = login.get("captcha_image", "")
+            captcha_input_config = login.get("captcha_input", "")
+            if captcha_img_config and captcha_input_config:
+                code = self._get_captcha_code(captcha_img_config, default_selector_type)
+                if code:
+                    captcha_input_sel, captcha_input_type = parse_selector_config(captcha_input_config, default_selector_type)
+                    if captcha_input_sel:
+                        if self.driver.input(captcha_input_sel, code, captcha_input_type):
+                            self.log(f"验证码识别并输入: {code}")
+                        else:
+                            self.log(f"验证码输入框定位失败: {captcha_input_sel} ({captcha_input_type})")
+                else:
+                    self.log("验证码识别失败。")
+        
+        return True
+
+    def _get_captcha_code(self, img_config: Any, default_selector_type: str) -> str | None:
+        """
+        获取验证码识别结果
+        使用 ddddocr，限制字符范围为数字+字母组合（char_ranges=0）
+        优先使用src()方法获取图片资源（更清晰），base64可直接转为bytes
+        """
+        import os
+        
+        ocr = self.ensure_ocr()
+        if not ocr:
+            return None
+        
+        # 解析选择器配置
+        img_selector, selector_type = parse_selector_config(img_config, default_selector_type)
+        if not img_selector:
+            return None
+        
+        # 优先使用src()方法获取图片资源（base64可直接转为bytes，更清晰）
+        img_data = None
+        img_src = self.driver.get_src(img_selector, selector_type, base64_to_bytes=True)
+        
+        if img_src:
+            if isinstance(img_src, bytes):
+                # base64数据已转换为bytes
+                img_data = img_src
+                self.log("通过src()方法获取到base64图片数据")
+            elif isinstance(img_src, str):
+                # 如果是URL字符串
+                self.log(f"通过src()方法获取到图片URL: {img_src[:50]}...")
+                # 先尝试OCR识别URL（OCR helper会处理URL下载）
+                try:
+                    code = ocr.recognize(img_src, char_ranges=0)
+                    if code:
+                        # 尝试下载并保存图片
+                        try:
+                            import requests
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            }
+                            resp = requests.get(img_src, headers=headers, timeout=10)
+                            if resp.status_code == 200:
+                                img_path = os.path.join(IMG_DIR, "captcha.png")
+                                with open(img_path, 'wb') as f:
+                                    f.write(resp.content)
+                                self.log(f"验证码图片已保存: {img_path}")
+                        except Exception:
+                            pass
+                        return code
+                except Exception:
+                    pass
+        
+        # 如果src()方法获取到bytes数据，使用该数据进行识别
+        if img_data:
+            # 保存图片到img目录
+            img_path = os.path.join(IMG_DIR, "captcha.png")
+            try:
+                with open(img_path, 'wb') as f:
+                    f.write(img_data)
+                self.log(f"验证码图片已保存: {img_path}")
+            except Exception as e:
+                self.log(f"保存验证码图片失败: {e}")
+            
+            # 使用图片数据进行识别
+            code = ocr.recognize(img_data, char_ranges=0)
+            if code:
+                return code
+        
+        # 如果src()方法失败，退而使用截图方式（清晰度较低）
+        self.log("src()方法未获取到数据，使用截图方式作为备选...")
+        screenshot_data = self.driver.capture_element_png(img_selector, selector_type)
+        if screenshot_data:
+            # 保存截图到img目录（覆盖保存）
+            img_path = os.path.join(IMG_DIR, "captcha.png")
+            try:
+                with open(img_path, 'wb') as f:
+                    f.write(screenshot_data)
+                self.log(f"验证码截图已保存: {img_path}")
+            except Exception as e:
+                self.log(f"保存验证码截图失败: {e}")
+            
+            # char_ranges=0 表示：纯数字 0-9
+            code = ocr.recognize(screenshot_data, char_ranges=0)
+            if code:
+                return code
+        
+        return None
+
+    def _close_dialog(self, mode: str):
+        """
+        关闭弹窗
+        点击登录后，使用配置的关闭弹窗选择器，timeout=4去抓取该元素
+        元素一出现就可以找到，没有的时候也可以懒加载
+        """
+        try:
+            login_all = self.settings.get("login", {})
+            login = login_all.get(mode, {})
+            default_selector_type = login.get("selector_type", "xpath")
+            close_dialog_config = login.get("close_dialog", "")
+            
+            if not close_dialog_config:
+                # 如果没有配置关闭弹窗选择器，直接返回
+                return
+            
+            # 解析选择器配置
+            close_sel, close_type = parse_selector_config(close_dialog_config, default_selector_type)
+            if not close_sel:
+                return
+            
+            # 使用timeout=4去抓取该元素，元素一出现就可以找到
+            self.log("等待并查找关闭弹窗按钮...")
+            if self.driver.click(close_sel, close_type, timeout=4):
+                self.log("已点击关闭弹窗按钮")
+            else:
+                self.log("未找到关闭弹窗按钮（可能弹窗未出现）")
+        except Exception as e:
+            # 静默处理错误，不影响主流程
+            pass
+
+    def _submit(self, mode: str) -> bool:
+        login_all = self.settings.get("login", {})
+        login = login_all.get(mode, {})
+        default_selector_type = login.get("selector_type", "xpath")
+        
+        # 使用灵活的选择器配置
+        submit_config = login.get("submit", "")
+        if submit_config:
+            submit_sel, submit_type = parse_selector_config(submit_config, default_selector_type)
+            if submit_sel:
+                ok = self.driver.click(submit_sel, submit_type)
+                if not ok:
+                    self.log(f"提交按钮定位失败。选择器: {submit_sel} ({submit_type})")
+                return ok
+        self.log("提交按钮选择器未配置")
+        return False
+
+    def _single_login_attempt(self, mode: str):
+        try:
+            if not self.driver:
+                self.open_page(mode)
+            if not self.driver:
+                return
+            if not self._fill_login_form(mode):
+                return
+            # 当未开启自动识别验证码时，仅输入账号密码（和可选序列号）但不提交
+            if not self.var_auto_ocr.get():
+                self.log("未开启自动识别验证码：已输入账号/密码（不提交登录）。")
+                return
+            if not self._submit(mode):
+                return
+            self.log("已尝试提交登录。")
+            
+            # 点击登录后，尝试关闭弹窗
+            self._close_dialog(mode)
+        except Exception as e:
+            self.log(f"登录流程失败: {e}")
+
+    def login_once(self):
+        """单次登录（后台线程执行）"""
+        self.save_current_settings()
+        mode = self.current_mode
+        
+        def worker():
+            try:
+                self._single_login_attempt(mode)
+            except Exception as e:
+                self.log(f"登录过程出错: {e}")
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def loop_login(self):
+        self.save_current_settings()
+
+        if self.looping:
+            self.log("循环已在执行中。")
+            return
+
+        self.looping = True
+        self.loop_stop.clear()
+        # 优先使用GUI中的循环次数
+        try:
+            attempts = int(self.var_loop_attempts.get())
+        except ValueError:
+            attempts = int(self.settings.get("loop_attempts", 100))
+
+        def worker():
+            try:
+                for i in range(attempts):
+                    if self.loop_stop.is_set():
+                        self.log("收到停止指令，终止循环。")
+                        break
+                    self.log(f"开始第 {i+1}/{attempts} 次登录尝试")
+                    self._single_login_attempt(self.current_mode)
+                    # 可中斷的睡眠
+                    for _ in range(20):
+                        if self.loop_stop.is_set():
+                            break
+                        time.sleep(0.1)
+            finally:
+                self.looping = False
+                self.log("循环完成。")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def stop_loop(self):
+        if not self.looping:
+            self.log("循环未在执行。")
+            return
+        self.loop_stop.set()
+        self.log("已发送停止指令。")
+    
+    def test_captcha(self):
+        """测试验证码识别功能（后台线程执行）"""
+        mode = self.current_mode
+        login_all = self.settings.get("login", {})
+        login = login_all.get(mode, {})
+        default_selector_type = login.get("selector_type", "xpath")
+        captcha_img_config = login.get("captcha_image", "")
+        
+        if not captcha_img_config:
+            self.log(f"[测试验证码] 当前模式({mode})未配置验证码图片选择器")
+            return
+        
+        def worker():
+            try:
+                # 解析选择器配置
+                captcha_img_sel, selector_type = parse_selector_config(captcha_img_config, default_selector_type)
+                if not captcha_img_sel:
+                    self.log(f"[测试验证码] 验证码图片选择器配置无效")
+                    return
+                
+                # 如果浏览器未启动，先启动
+                if not self.driver:
+                    self.log("[测试验证码] 浏览器未启动，正在打开页面...")
+                    # 在主线程中打开页面（这会启动浏览器）
+                    self.root.after(0, lambda: self.open_page(mode))
+                    time.sleep(3)  # 等待页面加载
+                
+                if not self.driver:
+                    self.log("[测试验证码] 浏览器启动失败")
+                    return
+                
+                self.log(f"[测试验证码] 开始测试验证码识别...")
+                self.log(f"[测试验证码] 模式: {mode} ({'报名' if mode=='bm' else '考务'})")
+                self.log(f"[测试验证码] 选择器: {captcha_img_sel}")
+                self.log(f"[测试验证码] 选择器类型: {selector_type}")
+                
+                # 优先使用src()方法获取图片资源（更清晰）
+                import os
+                img_url = None
+                img_data = None
+                
+                try:
+                    # 使用src()方法获取图片资源（base64可直接转为bytes）
+                    img_src = self.driver.get_src(captcha_img_sel, selector_type, base64_to_bytes=True)
+                    if img_src:
+                        if isinstance(img_src, bytes):
+                            # base64数据已转换为bytes
+                            img_data = img_src
+                            self.log(f"[测试验证码] 通过src()方法获取到base64图片数据，大小: {len(img_data)} 字节")
+                            # 保存图片
+                            img_path = os.path.join(IMG_DIR, "captcha_test.png")
+                            try:
+                                with open(img_path, 'wb') as f:
+                                    f.write(img_data)
+                                self.log(f"[测试验证码] 图片已保存: {img_path}")
+                            except Exception as e:
+                                self.log(f"[测试验证码] 保存图片失败: {e}")
+                        elif isinstance(img_src, str):
+                            # URL字符串
+                            img_url = img_src
+                            self.log(f"[测试验证码] 通过src()方法获取到图片URL: {img_src}")
+                            # 尝试下载并保存
+                            try:
+                                import requests
+                                headers = {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                }
+                                resp = requests.get(img_url, headers=headers, timeout=10)
+                                if resp.status_code == 200:
+                                    img_path = os.path.join(IMG_DIR, "captcha_test_url.png")
+                                    with open(img_path, 'wb') as f:
+                                        f.write(resp.content)
+                                    self.log(f"[测试验证码] URL图片已保存: {img_path}")
+                            except Exception:
+                                pass
+                except Exception as e:
+                    self.log(f"[测试验证码] 获取src()失败: {e}")
+                
+                # 如果src()方法未获取到数据，尝试截图方式
+                if not img_url and not img_data:
+                    try:
+                        img_data = self.driver.capture_element_png(captcha_img_sel, selector_type)
+                        if img_data:
+                            img_size = len(img_data)
+                            self.log(f"[测试验证码] 截图成功，图片大小: {img_size} 字节")
+                            # 保存截图到img目录
+                            img_path = os.path.join(IMG_DIR, "captcha_test.png")
+                            try:
+                                with open(img_path, 'wb') as f:
+                                    f.write(img_data)
+                                self.log(f"[测试验证码] 截图已保存: {img_path}")
+                            except Exception as e:
+                                self.log(f"[测试验证码] 保存截图失败: {e}")
+                    except Exception as e:
+                        self.log(f"[测试验证码] 截图失败: {e}")
+                
+                if not img_url and not img_data:
+                    self.log("[测试验证码] ❌ 无法获取验证码图片（既无法获取src也无法截图）")
+                    return
+                
+                # 进行OCR识别
+                self.log("[测试验证码] 开始OCR识别...")
+                ocr = self.ensure_ocr()
+                if not ocr:
+                    self.log("[测试验证码] ❌ OCR未初始化")
+                    return
+                
+                try:
+                    # 优先使用URL识别
+                    result = None
+                    if img_url:
+                        self.log(f"[测试验证码] 使用图片URL进行识别...")
+                        result = ocr.recognize(img_url, char_ranges=0)
+                    
+                    # 如果URL识别失败，使用截图
+                    if not result and img_data:
+                        self.log(f"[测试验证码] 使用截图进行识别...")
+                        result = ocr.recognize(img_data, char_ranges=0)
+                    
+                    if result:
+                        self.log(f"[测试验证码] ✅ 识别成功: {result}")
+                    else:
+                        self.log(f"[测试验证码] ❌ 识别失败: 未能识别出验证码")
+                except Exception as e:
+                    self.log(f"[测试验证码] ❌ 识别过程出错: {e}")
+            except Exception as e:
+                self.log(f"[测试验证码] ❌ 测试过程出错: {e}")
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def show_about(self):
+        """显示关于对话框"""
+        AboutDialog(self.root)
+
+
+class AboutDialog:
+    """关于及版权信息对话框"""
+    def __init__(self, parent):
+        self.window = tk.Toplevel(parent)
+        self.window.title("关于及版权信息")
+        self.window.resizable(False, False)
+        
+        # 设置窗口大小和居中
+        window_width = 600
+        window_height = 500
+        screen_width = parent.winfo_screenwidth()
+        screen_height = parent.winfo_screenheight()
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        # 主容器
+        main_frame = ttk.Frame(self.window, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 标题区域
+        title_frame = ttk.Frame(main_frame)
+        title_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        title_label = tk.Label(
+            title_frame,
+            text="公务员网站自动登录助手",
+            font=("Microsoft YaHei", 16, "bold")
+        )
+        title_label.pack(anchor=tk.W)
+        
+        version_label = tk.Label(
+            title_frame,
+            text="版本 1.0.0 | © 2025",
+            font=("Microsoft YaHei", 9),
+            fg="gray"
+        )
+        version_label.pack(anchor=tk.W, pady=(5, 0))
+        
+        # 分隔线
+        separator = ttk.Separator(main_frame, orient=tk.HORIZONTAL)
+        separator.pack(fill=tk.X, pady=10)
+        
+        # 内容区域（使用Text组件支持超链接）
+        content_frame = ttk.Frame(main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 使用Text组件显示内容
+        text_widget = tk.Text(
+            content_frame,
+            wrap=tk.WORD,
+            font=("Microsoft YaHei", 10),
+            bg=self.window.cget('bg'),
+            relief=tk.FLAT,
+            padx=5,
+            pady=5,
+            height=15
+        )
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        
+        # 插入内容
+        content = """开发者信息
+
+• Powered By: CY (666cy666)
+• GitHub: https://github.com/666cy666/ServantLoginScript
+• Releases: https://github.com/666cy666/ServantLoginScript/releases
+• 联系方式: 19877365586@163.com
+
+
+技术支持
+
+▸ 本软件免费开源，欢迎Star支持
+• 使用问题请提交GitHub Issue: https://github.com/666cy666/ServantLoginScript/issues
+▸ 本软件为开源软件，请勿以任何形式贩卖此项目
+▸ 若进行商业合作请联系开发者
+
+
+版权声明
+
+仅供学习与交流使用，请勿用于任何违反网站条款的用途。
+"""
+        
+        text_widget.insert(tk.END, content)
+        text_widget.config(state=tk.DISABLED)  # 禁用编辑
+        
+        # 底部按钮区域
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(15, 0))
+        
+        # GitHub按钮
+        github_btn = ttk.Button(
+            button_frame,
+            text="访问 GitHub 源码",
+            command=lambda: webbrowser.open("https://github.com/666cy666/ServantLoginScript")
+        )
+        github_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Releases按钮
+        releases_btn = ttk.Button(
+            button_frame,
+            text="下载最新版本",
+            command=lambda: webbrowser.open("https://github.com/666cy666/ServantLoginScript/releases")
+        )
+        releases_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # 关闭按钮
+        close_btn = ttk.Button(
+            button_frame,
+            text="关闭",
+            command=self.window.destroy
+        )
+        close_btn.pack(side=tk.RIGHT)
+        
+        # 绑定关闭事件
+        self.window.protocol("WM_DELETE_WINDOW", self.window.destroy)
+        
+        # 使窗口获得焦点
+        self.window.transient(parent)
+        self.window.grab_set()
+
+
+def main():
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
+
+
+if __name__ == '__main__':
+    main()
+
+

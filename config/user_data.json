@@ -1,0 +1,11 @@
+{
+  "account": "example_account",
+  "password": "example_password",
+  "auto_ocr": true,
+  "headless": false,
+  "topmost": false,
+  "mode": "kw",
+  "kw_serial": "example_serial",
+  "browser": "chrome",
+  "loop_attemptsGUI": 100
+}

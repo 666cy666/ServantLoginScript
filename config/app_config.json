@@ -1,0 +1,65 @@
+{
+  "login": {
+    "bm": {
+      "url": "http://bm.scs.gov.cn/pp/gkweb/core/web/ui/business/auth/login.html",
+      "selector_type": "class_name",
+      "username": {
+        "selector": "input240",
+        "selector_type": "class_name"
+      },
+      "password": {
+        "selector": "input240 password",
+        "selector_type": "class_name"
+      },
+      "captcha_image": {
+        "selector": "captchaImg",
+        "selector_type": "id"
+      },
+      "captcha_input": {
+        "selector": "captchaWord",
+        "selector_type": "id"
+      },
+      "submit": {
+        "selector": "register_btn",
+        "selector_type": "class_name"
+      },
+      "close_dialog": {
+        "selector": "aui_close",
+        "selector_type": "class_name"
+      }
+    },
+    "kw": {
+      "url": "http://gwy.cpta.com.cn/gagwy/login/login_qt.htm",
+      "selector_type": "css",
+      "username": {
+        "selector": "ypassword",
+        "selector_type": "id"
+      },
+      "password": {
+        "selector": "yusername",
+        "selector_type": "id"
+      },
+      "serial": {
+        "selector": "",
+        "selector_type": ""
+      },
+      "captcha_image": {
+        "selector": "label img[title=\"单击图片刷新\"]",
+        "selector_type": "css"
+      },
+      "captcha_input": {
+        "selector": "yzm",
+        "selector_type": "id"
+      },
+      "submit": {
+        "selector": "login_red",
+        "selector_type": "css"
+      },
+      "close_dialog": {
+        "selector": "aui_close",
+        "selector_type": "class_name"
+      }
+    }
+  },
+  "loop_attempts": 100
+}

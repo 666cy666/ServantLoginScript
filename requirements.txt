@@ -1,0 +1,6 @@
+DrissionPage>=4.0.0
+requests>=2.31.0
+ddddocr>=1.4.11
+numpy>=1.24.0
+onnxruntime>=1.16.0
+selenium === 4.14.0
