@@ -19,7 +19,9 @@
 - 可选“窗口置顶”
 - 平均每1min登录约25-30次
 
-下载链接：https://github.com/666cy666/ServantLoginScript/releases/download/ServantLoginScriptV1.0/ServantLoginScriptV1.0.zip![image-20251031141035398](docs/images/example_show.gif)
+下载链接：https://github.com/666cy666/ServantLoginScript/releases/download/ServantLoginScriptV1.1/ServantLoginScript.zip
+
+![image-20251031141035398](docs/images/example.gif)
 
 操作流程：
 
